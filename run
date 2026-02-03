@@ -1,0 +1,3 @@
+#!/bin/sh
+MUGRADE_KEY=$(cat api.key) poetry run jupyter lab
+
