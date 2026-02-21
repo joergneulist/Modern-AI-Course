@@ -209,5 +209,5 @@ __marimo__/
 poetry.lock
 api.key
 */*_tests.py
-hw1/MNIST
+hw*/MNIST
 
