@@ -1,0 +1,237 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{blkarray}
+\usepackage{minted}
+\usepackage{pifont}
+\usepackage{tcolorbox}
+\tcbuselibrary{minted}
+\tcbuselibrary{skins}
+
+
+\title{
+  Modern AI Course \\
+  \large An abbreviated and unofficial script}
+\author{Jörg Neulist}
+\date{March 2026}
+
+\begin{document}
+
+\maketitle
+
+\section*{Lecture 11: Self Attention}
+\subsection*{LLM setting}
+\begin{itemize}
+    \item Input is $T$ tokens from a vocabulary of $V$ words in one-hot encoding. $X_\mathrm{oh}\in\mathbf{R}^{T\times V}$ and
+    $$\text{"the quick brown \dots"} \mapsto X_\mathrm{oh} = 
+    \begin{blockarray}{[ccc]c}
+        \text{---} & x_1^\intercal & \text{---} & \text{"the"}\\
+        \text{---} & x_2^\intercal & \text{---} & \text{"quick"}\\
+        \text{---} & x_3^\intercal & \text{---} & \text{"brown"}\\
+        &\vdots&&\vdots
+    \end{blockarray}$$
+    
+\item We use embedding to reduce dimensions and enrich semantic interpretation, using $W_E\in\mathbb{R}^{d\times V}$:\\
+    $$X := X_\mathrm{oh} W_E^\intercal\quad\in\mathbb{R}^{T\times d}$$
+\end{itemize}
+
+\subsection*{The self-attention operation}
+$$Y = \mathrm{SelfAttention}(Q, K, V)$$
+\begin{enumerate}
+    \item form three matrices $Q, K, V\in\mathbb{R}^{T\times d}$:
+    $$Q = X W_Q^\intercal,\quad K = X W_K^\intercal,\quad V = X W_V^\intercal$$
+    where $W_Q, W_K, W_V\in\mathbb{R}^{d\times d}$.
+
+    \item Output self-attention operation:
+    $$Y = \mathrm{SelfAttention}(Q, K, V) := \mathrm{softmax}\left(\frac{QK^\intercal}{\sqrt{d}}\right)V$$
+    (softmax applied by row)
+
+    \item The attention matrix $A := \mathrm{softmax}\left(\frac{QK^\intercal}{\sqrt{d}}\right)$ can then be thought of as being applied to the input, because:
+    $$Y = \mathrm{SelfAttention}(Q, K, V) = A X W_V^\intercal $$
+
+    \item One important conclusion is that self-attention \emph{mixes} the input rows, which normal MLP doesn't do.
+
+    \item This can be interpreted as a soft dict lookup.
+\end{enumerate}
+
+\subsection*{Self-attention in code}
+\begin{minted}{python}
+import math
+import torch
+
+def self_attention(Q, K, V):
+    d = Q.shape[-1]
+    return torch.softmax(Q @ K.transpose(-1, -2) / math.sqrt(d), dim=-1) @ V
+
+X = torch.randn(5, 100, 10)
+WQ = torch.randn(10, 10)
+WK = torch.randn(10, 10)
+WV = torch.randn(10, 10)
+Q, K, V = X @ WQ.T, X @ WK.T, X @ WV.T
+Y = self_attention(Q, K, V) # V has shape [5, 100, 10]
+\end{minted}
+
+\subsection*{Properties of self-attention}
+\begin{itemize}
+    \item It doesn't matter how we order the rows of X.
+    \item Every output row can depend on every input row (full mixing over rows).
+\end{itemize}
+
+\subsection*{Multihead Attention}
+Motivation: The attention operation is the same for every single row of the input:
+    $$A(X) X W_V^\intercal = \begin{bmatrix}
+        \text{---} & a_1^\intercal & \text{---} \\
+        \text{---} & a_2^\intercal & \text{---} \\
+        &\vdots&\\
+    \end{bmatrix} X W_V^\intercal = \begin{bmatrix}
+        \text{---} & a_1^\intercal X & \text{---} \\
+        \text{---} & a_2^\intercal X & \text{---} \\
+        &\vdots&\\
+    \end{bmatrix} W_V^\intercal$$
+This is not optimal; we desire more adaptability.
+
+\begin{enumerate}
+    \item Starting with $Q = X W_Q^\intercal$, $K = X W_K^\intercal$, $V = X W_V^\intercal$.
+    \item Partition each $Q, K, V$ by columns in $h$ groups called "heads":
+        $$Q=:\begin{bmatrix}
+            \vert & \vert &       & \vert\\
+            Q_1   & Q_2   & \dots & Q_h  \\
+            \vert & \vert &       & \vert
+        \end{bmatrix}$$
+        Each $Q_i\in\mathbb{R}^{T\times\frac{d}{h}}$. Split $K$ and $V$ in the same way
+    \item Define multihead attention as the independent operation of the separate attention blocks, projected by a final output projection $W_p\in\mathbb{R}^{d\times d}$
+        $$Y=:\begin{bmatrix}
+            \vert &       & \vert\\
+            \text{SelfAttention}(Q_1, K_1, V_1)   &  \dots & \text{SelfAttention}(Q_h, K_h, V_h) \\
+            \vert &        & \vert
+        \end{bmatrix}W_p$$
+\end{enumerate}
+
+
+
+
+
+\section*{Lecture 12: Transformers}
+
+\subsection*{Transformer Layers and Transformers}
+\begin{itemize}
+    \item Transformer Layer = self-attention + two-layer MLP + normalisation + residual connections
+    \item Transformer = Embedding + N times Transformer Layers + normalization + linear output layer
+    \item Transformer Layer with input $X \in \mathbb{R}^{T\times d}$
+    ($T$ is the sequence length, i.e. the number of tokens, $d$ is the embedding dimensionality)
+    \begin{enumerate}
+        \item Apply self-attention with normalisation of each token independently:
+        $$Z := X + \mathrm{MultiheadAttention}(\mathrm{norm}(X))\mathrm{,\, where}$$
+        $$\mathrm{norm}(X) := \frac{X}{\|X\|_2}, \mathrm{applied\, rowwise}$$
+        
+        \item Return
+        $$Y := Z + \mathrm{MLP}(\mathrm{norm}(Z))\mathrm{,\, where}$$
+        $$\mathrm{MLP}(X) := \sigma(XW_1^\intercal)W_2^\intercal$$
+        Typically, the hidden dimension of the MLP is about four times as large as in- and output, i.e.
+        $W_1\in\mathbb{R}^{d_\mathrm{MLP}\times d}$, $W_2\in\mathbb{R}^{d\times d_\mathrm{MLP}}$ and $d_\mathrm{MLP}\approx 4d$
+    \end{enumerate}
+    \item Transformer Layer with input $X_\mathrm{oh} \in \mathbb{R}^{T\times V}$
+    ($V$ is the vocabulary size, used with one-hot encoding)
+    \begin{enumerate}
+        \item Embed, to reduce dimensionality:
+        $$X_0 := X_{oh}W_E^\intercal \mathrm{,\,where\,} W_E\in\mathbb{R}^{d\times V} \mathrm{,\,so\,} X_0\in\mathbb{R}^{T\times d}$$
+
+        \item Repeat $N$ times:
+        $$X_i:=\mathrm{TransformerLayer}_i(X_{i-1})$$
+        i.e. $N$ different Transformer Layers (different MLP and attention weights)
+
+        \item Output:
+        $$Y:=\mathrm{norm}(X_N)W_0^\intercal \mathrm{,\,where\,} W_0\in\mathbb(R)^{V\times d} \mathrm{,\,so\,} Y\in\mathbb(R)^{T\times V}$$
+    \end{enumerate}
+\end{itemize}
+
+\subsection*{Parallel Prediction}
+\begin{itemize}
+    \item Prediction gives $T$ tokens, not only one. Goal, when training a transformer, is to predict the next word from every prefix. Let $h$ be the prediction mapping:
+    $$h: \mathbb(R)^{T\times V} \rightarrow \mathbb(R)^V \mathrm{,\,with\,the\,loss\,defined\,as}$$
+    $$L:=\sum_{t=1}^{T-1} L_\mathrm{CE}(h(X_{1:t}),Y_t),$$
+    where $Y_t$ is the $t+1$st word.
+
+    \item We apply the Transformer to the entire input sequence:
+    $$\hat{Y} := \mathrm{Transformer}(X_{oh}) \quad \in\mathbb(R)^{T\times V}$$
+    $$L:=\sum_{t=1}^T L_\mathrm{CE}(\hat{Y}_t,Y_t)$$
+    The obvious problem is that the model could just look ahead in the sequence to "predict" the ground truth. That is not desirable. Moreover, the Attention operations are mixing op the input sequence, so they are not order-aware with respect to the input text. This leads us to...
+\end{itemize}
+
+\subsection*{Positional Encoding / Embedding (fix invariance to word order)}
+\begin{itemize}
+    \item Absolute positional embedding: adding a fix (different embedding to each position of $X$):
+    \begin{enumerate}
+        \item Add positional code:
+        $$X_0 := X_{oh}W_E^\intercal + P{,\quad where\,} P\in\mathbb{R}^{T\times d}$$
+        $$P:=\begin{bmatrix}
+            \text{---} & P_1^\intercal & \text{---} \\
+            \text{---} & P_2^\intercal & \text{---} \\
+            &...&
+        \end{bmatrix}$$
+        $P_i$ are different, unique terms for each row (i.e. position in the input sequence).
+
+        \item Alternative: Relative positional embedding
+        $$\mathrm{SelfAttention}(Q, K, V):=\mathrm{softmax}\left(\frac{QK^\intercal}{\sqrt{d}}+D\right)V$$
+        where $D$ encodes the distance between words in the sequence.
+
+        \item Alternative: Rotary positional embedding (RoPE), implemented in most modern LLMs
+        $$\mathrm{SelfAttention}(Q, K, V):=\mathrm{softmax}\left(\frac{QD'K^\intercal}{\sqrt{d}}\right)V$$
+    \end{enumerate}
+\end{itemize}
+
+\subsection*{Masked Attention}
+\begin{itemize}
+    \item In a Transformer model, every output depends on every input:
+        $$\hat{Y} := \mathrm{Transformer}(X_{oh})$$
+        $$\mathrm{SelfAttention}(Q, K, V) = \mathrm{softmax}\left(\frac{QK^\intercal}{\sqrt{d}}\right)V =: A X W_V^\intercal$$
+        Applied to the input, we have:
+        $$\begin{bmatrix}
+            \text{---} & a_1^\intercal & \text{---} \\
+            \text{---} & a_2^\intercal & \text{---} \\
+            &\vdots&
+        \end{bmatrix}
+        \begin{bmatrix}
+            \text{---} & x_1^\intercal & \text{---} \\
+            \text{---} & x_2^\intercal & \text{---} \\
+            &\vdots&
+        \end{bmatrix}
+        = \begin{bmatrix}
+            \text{---} & a_1^\intercal X & \text{---} \\
+            \text{---} & a_2^\intercal X & \text{---} \\
+            &\vdots&
+        \end{bmatrix}$$
+        And every $a_i^\intercal X$ mixes parts from every token $x_i$ in the input sequence.
+
+    \item An alternative approach might be:
+        $$\begin{bmatrix}
+            \text{---} & a_1^\intercal & \text{---} \\
+            \text{---} & a_2^\intercal & \text{---} \\
+            &\vdots&
+        \end{bmatrix}
+        \begin{bmatrix}
+            \text{---} & x_1^\intercal & \text{---} \\
+            \text{---} & x_2^\intercal & \text{---} \\
+            &\vdots&
+        \end{bmatrix}
+        = \begin{bmatrix}
+            \text{---} & \sum_{t=1}^T (a_1)_t x_t^\intercal & \text{---} \\
+            \text{---} & \sum_{t=1}^T (a_2)_t x_t^\intercal & \text{---} \\
+            &\vdots&
+        \end{bmatrix}$$
+        If for each $a_i$ only the elements with indices $<i$ were non-zero, we would avoid "looking back".
+
+    \items Leveraging the softmax operation, we can achieve that by letting:
+        $$\mathrm{SelfAttention}(Q, K, V) := \mathrm{softmax}\left(\frac{QK^\intercal + M}{\sqrt{d}}\right)V$$
+        where
+        $$M := \begin{bmatrix}
+            0 & -\infty & \dots & -\infty \\
+            0 &       0 & \dots & -\infty \\
+            &\vdots&&\\
+            0 &       0 & \dots & 0
+        \end{bmatrix}$$
+
+    \items Since $Q$, $K$, and $V$ are dependent on $X$, it is not obvious that this operation prevents all leakage. I'm annotating the proof here, but it can be found in the video.
+\end{itemize}
+
+\end{document}
