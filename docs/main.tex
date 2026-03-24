@@ -231,7 +231,142 @@ This is not optimal; we desire more adaptability.
             0 &       0 & \dots & 0
         \end{bmatrix}$$
 
-    \items Since $Q$, $K$, and $V$ are dependent on $X$, it is not obvious that this operation prevents all leakage. I'm annotating the proof here, but it can be found in the video.
+    \items Since $Q$, $K$, and $V$ are dependent on $X$, it is not obvious that this operation prevents all leakage. I'm not annotating the proof here, but it can be found in the video.
 \end{itemize}
+
+
+
+
+
+
+
+\section*{Lecture 13: Efficient LLM Inference}
+
+\subsection*{Generating text from an LLM}
+Sampling from an LLM:
+\begin{itemize}
+\item Take the last output $Y_T \in\mathbf(R)^k$ from
+$$Y:=LLM(X_\mathrm{oh})=\begin{bmatrix}
+Y_1 \\ Y_2 \\ \vdots \\ Y_T
+\end{bmatrix}$$
+
+\item convert to "probability"
+$$P:=\mathrm{softmax}(Y_T)=\frac{e^{Y_T}}{\sum_{j=1}^T e^Y_i}$$
+
+\item Sample next word from P, append to input sequence
+\end{itemize}
+
+\begin{minted}{python}
+import torch
+batch_size = 1
+seq_len = 100
+k = 5
+Y = torch.randn(batch_size, seq_len, k)
+p = torch.softmax(Y[0, -1], dim=-1)
+print(torch.cumsum(p, dim=-1))
+torch.multinomial(p, 100, replacement=True) # sample 100 times
+\end{minted}
+
+
+
+\subsection*{Temperature sampling}
+\begin{itemize}
+\item Naive sampling: $P:=\mathrm{softmax}(Y_T)$
+\item Temperature sampling:
+$$P:=\mathrm{softmax}\frac{Y_T}{\tau}\quad\tau\in\mathbb{R}_+$$
+\item Property: As $\tau\rightarrow 0$, $P$ puts all weight on the most likely next word.
+\item Property: As $\tau\rightarrow\infty$, $P$ becomes a uniform distribution.
+\end{itemize}
+
+
+
+
+
+\subsection*{KV Caching}
+\begin{itemize}
+\item When we add a new row to out input, like:
+$$X_\mathrm{oh} = 
+\begin{bmatrix}
+    \text{---} & x_1^\intercal & \text{---} \\
+    \text{---} & x_2^\intercal & \text{---} \\
+    &\vdots& \\
+    \text{---} & x_T^\intercal & \text{---} \\
+    \text{---} & x_{T+1}2^\intercal & \text{---}
+\end{bmatrix}
+\mapsto Y = 
+\begin{bmatrix}
+    \text{---} & y_1^\intercal & \text{---} \\
+    \text{---} & y_2^\intercal & \text{---} \\
+    &\vdots& \\
+    \text{---} & y_T^\intercal & \text{---} \\
+    \text{---} & y_{T+1}2^\intercal & \text{---}
+\end{bmatrix}
+$$
+\begin{enumerate}
+\item $Y = \mathrm{LLM}(X_\mathrm{oh})$
+\item $Y^\prime = LLM(X^\prime_\mathrm{oh})$
+\end{enumerate}
+\item We want a way to calculate $y_{T+1}$ as something like $\mathrm{LLM}(x_{T+1})$.
+\item LLM Operation
+\begin{enumerate}
+\item Right multiplications and non-linear operations\\
+Apply these independently to the rows of our internal representation, so they can be applied to a single additional row in isolation.
+\item Self Attention
+$$\mathrm{SelfAttention}(Q, K, V) =  \mathrm{softmax}\left(\frac{QK^\intercal}{\sqrt{d}}\right)V$$
+Looking at adding a new row:
+$$\begin{bmatrix}Y\\y_{T+1}^\intercal\end{bmatrix} = \mathrm{softmax}
+\left(\frac{
+\begin{bmatrix}Q\\q_{T+1}^\intercal\end{bmatrix}
+\begin{bmatrix}K\\k_{T+1}^\intercal\end{bmatrix}
+^\intercal}{\sqrt{d}}\right)
+\begin{bmatrix}V\\v_{T+1}^\intercal\end{bmatrix}
+$$
+\end{enumerate}
+
+\item KV Caching Algorithm:
+\begin{enumerate}
+\item Given $x_{T+1}$ as new input to self attention
+\item Store $K^\mathrm{cache}$ and  $V^\mathrm{cache}$
+\item Form $q_{T+1}=W_Q x_{T+1}$, $k_{T+1}=W_K x_{T+1}$, $v_{T+1}=W_V x_{T+1}$ 
+\item Append to Cache:
+$$K^\mathrm{cache}:=
+\begin{bmatrix}K^\mathrm{cache}_\mathrm{old}\\k_{T+1}^\intercal\end{bmatrix}
+\quad V^\mathrm{cache}:=
+\begin{bmatrix}V^\mathrm{cache}_\mathrm{old}\\v_{T+1}^\intercal\end{bmatrix}
+$$
+\item Yield output:
+$$y_{T+1} := \mathrm{SelfAttention}(q_{T+1}^\intercal, K^\mathrm{cache}, V^\mathrm{cache})$$
+$$= \mathrm{softmax}\left(\frac{q_{T+1}^\intercal K^{\mathrm{cache}\intercal}}{\sqrt{d}}\right)V^\mathrm{cache}$$
+\end{enumerate}
+
+\begin{minted}{python}
+import torch
+def self_attention(Q, K, V):
+    d = Q.shape[-1]
+    return torch.softmax(Q @ K.transpose(-1, -2) / math.sqrt(d), dim=-1) @ V
+
+seq_len = 100
+d = 64
+X = torch.randn(seq_len, d)
+WQ = torch.randn(d, d)
+WK = torch.randn(d, d)
+WV = torch.randn(d, d)
+Q, K, V = X @ WQ.T, X @ WK.T, X @ WV.T
+Y = self_attention(Q, K, V)
+
+xT = X[-1,:]
+qT, kT, vT = xT @ WQ.T, xT @ WK.T, xT @ WV.T
+yT = selfAttention(qT, K, V)
+#yT is now equal to Y[-1]
+\end{minted}
+
+\item Normally, self attention requires matrix products $QK^\intercak$, \dots - called "prefill" operations
+
+\items With KV caching, all operations now become matrix-vector products, e.g. $q_{T+1}^\intercal K^\intercal$. These are called "decode" operations. They are much less efficient per word than prefill ops.
+\end{itemize}
+
+
+
+
 
 \end{document}
