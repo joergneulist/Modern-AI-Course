@@ -208,6 +208,6 @@ __marimo__/
 
 poetry.lock
 api.key
-*/*_tests.py
-hw*/MNIST
+hw*/*
+!hw*/hw*.ipynb
 
